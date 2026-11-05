@@ -46,7 +46,7 @@ def config_problems(root):
     return problems
 
 
-def lock_problems(root, prefix):
+def lock_problems(root, prefixes):
     try:
         lock = tomllib.loads((root / "Cargo.lock").read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
@@ -54,8 +54,9 @@ def lock_problems(root, prefix):
     outside = sorted({package["source"] for package in lock.get("package", [])
                       if isinstance(package.get("source"), str)
                       and package["source"].startswith("git+")
-                      and not package["source"].startswith(prefix)})
-    return [f"git dependency outside {prefix.removeprefix('git+')}: {source}" for source in outside]
+                      and not any(package["source"].startswith(prefix) for prefix in prefixes)})
+    allowed = ", ".join(prefix.removeprefix("git+") for prefix in prefixes)
+    return [f"git dependency outside {allowed}: {source}" for source in outside]
 
 
 def metadata_problem(root):
@@ -76,16 +77,20 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--directory", default=".", help="the workspace root (default: .)")
     parser.add_argument("--allowed-prefix", default=DEFAULT_PREFIX,
-                        help=f"the Cargo.lock source prefix git dependencies must have (default: {DEFAULT_PREFIX})")
+                        help=f"comma-separated Cargo.lock source prefixes git dependencies may have (default: {DEFAULT_PREFIX})")
     args = parser.parse_args(argv)
     root = Path(args.directory)
-    if not args.allowed_prefix.startswith("git+") or "\n" in args.allowed_prefix or "\r" in args.allowed_prefix:
-        parser.error("--allowed-prefix must be one line starting with git+")
+    prefixes = [prefix.strip() for prefix in args.allowed_prefix.split(",") if prefix.strip()]
+    for prefix in prefixes:
+        if not prefix.startswith("git+") or "\n" in prefix or "\r" in prefix:
+            parser.error("--allowed-prefix must be a comma-separated list of one-line prefixes starting with git+")
+    if not prefixes:
+        parser.error("--allowed-prefix must name at least one prefix")
 
     if not (root / "Cargo.lock").is_file():
         problems = ["Cargo.lock is missing"]
     else:
-        problems = config_problems(root) + lock_problems(root, args.allowed_prefix)
+        problems = config_problems(root) + lock_problems(root, prefixes)
         if not problems:
             problem = metadata_problem(root)
             problems = [problem] if problem else []
@@ -95,7 +100,8 @@ def main(argv=None):
         print(f"::error::{problem}" if annotate else f"error: {problem}")
     if problems:
         return 1
-    print(f"Git dependencies all come from {args.allowed_prefix.removeprefix('git+')}, and Cargo.lock is up to date")
+    allowed = ", ".join(prefix.removeprefix("git+") for prefix in prefixes)
+    print(f"Git dependencies all come from {allowed}, and Cargo.lock is up to date")
     return 0
 
 

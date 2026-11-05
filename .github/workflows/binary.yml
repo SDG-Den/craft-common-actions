@@ -1,0 +1,139 @@
+name: "Binary"
+
+# Builds only the Linux x86_64 tarball and records it in `binary-url.json`, so the app's flake can
+# install a pre-built binary instead of compiling from source.
+#
+# The URL is built from `github.repository`, so a fork records its own releases and the upstream
+# repository records storytold's after the same workflow is merged there. Nothing is retargeted.
+
+on:
+  workflow_call:
+    inputs:
+      app-name:
+        description: "Application repository name (e.g. photocraft, cadcraft)"
+        type: string
+        required: true
+      app-title:
+        description: "Application display name (e.g. PhotoCraft, CADCraft)"
+        type: string
+        required: true
+      craft-fonts-ref:
+        description: "Git ref for storytold/craft-fonts embedded font assets"
+        type: string
+        required: false
+        default: "b076417b5880bd4154bd22f00695b1d28c6bea83"
+      version:
+        description: "Version override for a test run (empty: read from Cargo.toml)"
+        type: string
+        required: false
+        default: ""
+      release-tag:
+        description: "Release tag the tarball is attached to"
+        type: string
+        required: false
+        default: "binary-testing"
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    timeout-minutes: 10
+    name: version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      date: ${{ steps.v.outputs.date }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: v
+        name: Resolve version
+        uses: SDG-Den/craft-common-actions/actions/resolve-version@main
+        with:
+          input-version: ${{ inputs.version }}
+          app-title: ${{ inputs.app-title }}
+
+  binary:
+    name: Linux x86_64 binary
+    needs: [version]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      APP_NAME: ${{ inputs.app-name }}
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: 1
+      VERSION: ${{ needs.version.outputs.version }}
+      BUILD_DATE: ${{ needs.version.outputs.date }}
+      BUILD_SHA: ${{ github.sha }}
+      INPUT_VERSION: ${{ inputs.version }}
+      RELEASE_TAG: ${{ inputs.release-tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out craft-fonts
+        if: inputs.craft-fonts-ref != ''
+        uses: SDG-Den/craft-common-actions/actions/checkout-craft-fonts@main
+        with:
+          ref: ${{ inputs.craft-fonts-ref }}
+      - name: Check out craft-i18n
+        uses: SDG-Den/craft-common-actions/actions/checkout-craft-i18n@main
+      - uses: SDG-Den/craft-common-actions/actions/install-linux-deps@main
+        with:
+          deb-arch: amd64
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: binary-linux-x86_64
+      - name: Apply version override
+        if: inputs.version != ''
+        run: cargo xtask version set "$VERSION"
+      - name: Build the Linux tarball
+        env:
+          CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+          CRAFT_FONTS_REQUIRED: "1"
+          CRAFT_I18N_DIR: ${{ github.workspace }}/craft-i18n
+        run: |
+          set -euo pipefail
+          if [ -f craft-i18n.rev ]; then export CRAFT_I18N_REQUIRED=1; fi
+          app_env="${APP_NAME^^}"
+          app_env="${app_env//-/_}"
+          export "${app_env}_VERSION=$VERSION"
+          export "${app_env}_BUILD_DATE=$BUILD_DATE"
+          export "${app_env}_BUILD_SHA=$BUILD_SHA"
+          packaging/linux/package.sh --formats "tar"
+      - name: Publish the tarball
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release-tag }}
+          name: "Testing binary"
+          prerelease: true
+          make_latest: "false"
+          target_commitish: ${{ github.sha }}
+          files: dist/release/*-linux-x86_64.tar.gz
+      - name: Record binary-url.json
+        run: |
+          set -euo pipefail
+          tarball=$(ls dist/release/*-linux-x86_64.tar.gz)
+          asset=$(basename "$tarball")
+          sri="sha256-$(openssl dgst -sha256 -binary "$tarball" | base64 -w0)"
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${asset}"
+          jq -n \
+            --arg url "$url" \
+            --arg hash "$sri" \
+            --arg version "$VERSION" \
+            --arg tag "$RELEASE_TAG" \
+            --arg system "x86_64-linux" \
+            --arg repo "$GITHUB_REPOSITORY" \
+            '{url: $url, hash: $hash, version: $version, tag: $tag, system: $system, repo: $repo}' \
+            > binary-url.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- binary-url.json; then
+            echo "binary-url.json is unchanged"
+            exit 0
+          fi
+          git add binary-url.json
+          git commit -m "nix: record the latest Linux binary [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

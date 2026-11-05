@@ -1,7 +1,7 @@
 name: "Git sources"
 
 # Fails unless the app builds only from what its Cargo.lock names, and every git dependency comes
-# from github.com/storytold: Cargo.lock exists and is up to date, and no .cargo/config(.toml)
+# from an allowed owner: Cargo.lock exists and is up to date, and no .cargo/config(.toml)
 # replaces, patches or overrides a source. Callers run it beside their gate, or before a release:
 #
 #   git-sources:
@@ -17,19 +17,25 @@ on:
         type: string
         required: false
         default: "."
+      allowed-prefix:
+        description: "Comma-separated Cargo.lock source prefixes git dependencies may have"
+        type: string
+        required: false
+        default: "git+https://github.com/storytold/,git+https://github.com/SDG-Den/"
 
 permissions:
   contents: read
 
 jobs:
   git-sources:
-    name: Git dependencies come from storytold
+    name: Git dependencies come from an allowed owner
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: storytold/craft-common-actions/actions/check-git-sources@main
+      - uses: SDG-Den/craft-common-actions/actions/check-git-sources@main
         with:
           working-directory: ${{ inputs.working-directory }}
+          allowed-prefix: ${{ inputs.allowed-prefix }}
