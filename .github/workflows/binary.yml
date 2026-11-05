@@ -130,10 +130,10 @@ jobs:
             > binary-url.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- binary-url.json; then
+          git add binary-url.json
+          if git diff --cached --quiet; then
             echo "binary-url.json is unchanged"
             exit 0
           fi
-          git add binary-url.json
           git commit -m "nix: record the latest Linux binary [skip ci]"
           git push origin "HEAD:${GITHUB_REF_NAME}"
